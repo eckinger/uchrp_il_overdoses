@@ -1,0 +1,122 @@
+---
+title: "leafmap_prep"
+author: "Alexander Eckinger"
+date: '`r Sys.Date()`'
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(sf)
+library(tidyverse)
+library(leaflet)
+library(dplyr)
+library(htmlwidgets)
+```
+
+Cleaning legislative district shapefiles.
+```{r}
+senate_sf <- st_read("shapefiles/tl_2022_17_sldu/tl_2022_17_sldu.shp")
+house_sf <- st_read("shapefiles/tl_2022_17_sldl/tl_2022_17_sldl.shp")
+house_sf <- house %>% select(NAMELSAD, LSY)
+senate_sf <- senate %>% select(NAMELSAD, LSY)
+st_write(house_sf, "shapefiles/house/house_cleaned.shp", driver = "ESRI Shapefile")
+st_write(senate_sf, "shapefiles/senate/senate_cleaned.shp", driver = "ESRI Shapefile")
+house_sf <- st_read("shapefiles/house/house_cleaned.shp") %>%
+  filter(NAMELSAD != "State House Districts not defined")
+senate_sf <- st_read("shapefiles/senate/senate_cleaned.shp")
+```
+Processing overdose data.
+```{r, include, warning=FALSE}
+# Read in county shapefile
+county_sf <- st_read("shapefiles/IL_BNDY_County/IL_BNDY_County_Py.shp")
+
+# Clean county overdose data CSV
+# https://clearinghouse.isgs.illinois.edu/data/reference/illinois-county-boundaries-polygons-and-lines
+county_ods_nonlethal <-
+  read_csv("overdose_data/county_nonlethal.csv", show_col_types = FALSE) %>%
+  select(CY, county_name, Cases, Rate) %>%
+  rename(COUNTY_NAM = county_name) %>%
+  filter(CY == 2021) %>%
+  mutate(COUNTY_NAM = toupper(COUNTY_NAM))
+
+county_ods_sf <-
+  merge(county_sf, county_ods_nonlethal, by="COUNTY_NAM")
+county_ods_sf
+```
+Now for making the map itself.
+```{r}
+m <- leaflet(options = leafletOptions(minZoom = 6, maxZoom = 12)) %>%
+  setView(-89, 40, 6)# %>%
+  #addTiles() # add OpenStreetMap
+
+# County Overdose Data binning and colorway
+bins <- c(0,5,10,15,20,25)
+pal <- colorBin("YlOrRd",
+                domain = county_ods_sf$Rate,
+                bins   = bins)
+# Prep Labels
+county_labels <- sprintf(
+  "<strong>%s</strong><br/>%g Crude Rate<br/>%g",
+  county_ods_sf$COUNTY_NAM, county_ods_sf$Rate, county_ods_sf$CY
+) %>% lapply(htmltools::HTML)
+house_labels <- sprintf(
+  "<strong>%s</strong><br/>%s",
+  house_sf$NAMELSAD, house_sf$LSY
+) %>% lapply(htmltools::HTML)
+
+# Add Layers (counties, zip codes, house, senate) and Interactivity
+# Right now just have counties and house
+m <- m %>%
+  # Lower Chamber Districts
+  addPolygons(
+    data = house_sf,
+    color = "#444444", weight = 1, smoothFactor = 0.5,
+    opacity = 1.0, fillOpacity = 0.5,
+    # Interactivity
+    label = house_labels,
+    labelOptions = labelOptions(
+      style = list("font-weight" = "normal", padding = "3px 8px"),
+      textsize = "15px",
+      direction = "auto"),
+    group = "Lower Chamber (House)"
+  ) %>%
+  # Counties with overdose fill
+  addPolygons(
+    data = county_ods_sf,
+    fillColor = ~pal(Rate),
+    weight = 2,
+    opacity = 1,
+    color = "white",
+    dashArray = "3",
+    fillOpacity = 0.7,
+    # Interactivity
+    highlightOptions = highlightOptions(
+      weight = 5,
+      color = "#666",
+      dashArray = "",
+      fillOpacity = 0.7,
+      bringToFront = TRUE),
+    label = county_labels,
+    labelOptions = labelOptions(
+      style = list("font-weight" = "normal", padding = "3px 8px"),
+      textsize = "15px",
+      direction = "auto"),
+    group = "Counties"
+  )
+
+# Add Legend and Layer Control
+m <- m %>%
+   addLegend(data     = county_ods_sf,
+             pal      = pal,
+             values   = ~Rate,
+             opacity  = 0.7,
+             title    = "Non-Fatal Overdose Crude Rate",
+             position = "bottomright") %>%
+  addLayersControl(
+    overlayGroups = c("Lower Chamber (House)", "Counties")
+  ) %>%
+  hideGroup("Counties")
+m
+saveWidget(m, file="nonfatal_ods_house_county.html")
+```
