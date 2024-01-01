@@ -214,9 +214,9 @@ hidden_groups <-
   c("House",
     #"Senate",
     "Counties (Non-Fatal)",
-    "Counties (Fatal)",
-    "Non-Fatal Legend",
-    "Fatal Legend"
+    "Counties (Fatal)"#,
+    #"Non-Fatal Legend",
+    #"Fatal Legend"
     )
 m <- m %>%
    addLegend(data     = county_nl_ods_sf,
