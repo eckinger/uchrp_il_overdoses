@@ -1,0 +1,246 @@
+---
+title: "leafmap_prep"
+author: "Alexander Eckinger"
+date: '`r Sys.Date()`'
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(sf)
+library(tidyverse)
+library(leaflet)
+library(dplyr)
+library(htmlwidgets)
+```
+
+# Loading Data
+```{r}
+# House
+house_sf <- st_read("shapefiles/tl_2022_17_sldl/tl_2022_17_sldl.shp")
+house_sf <- house %>% select(NAMELSAD, LSY)
+f <- list.files("shapefiles/house", full.names=T)
+file.remove(f)
+st_write(house_sf, "shapefiles/house/house_cleaned.shp", driver = "ESRI Shapefile")
+
+# Senate
+senate_sf <- st_read("shapefiles/tl_2022_17_sldu/tl_2022_17_sldu.shp")
+senate_sf <- senate %>% select(NAMELSAD, LSY)
+f <- list.files("shapefiles/senate", full.names=T)
+file.remove(f)
+st_write(senate_sf, "shapefiles/senate/senate_cleaned.shp", driver = "ESRI Shapefile")
+
+# County
+county_sf <- st_read("shapefiles/IL_BNDY_County/IL_BNDY_County_Py.shp")
+```
+
+# Prepping Data
+```{r, include, warning=FALSE}
+# Remove Lake Michigan District
+house_sf <- st_read("shapefiles/house/house_cleaned.shp") %>%
+  filter(NAMELSAD != "State House Districts not defined")
+senate_sf <- st_read("shapefiles/senate/senate_cleaned.shp") %>%
+  filter(NAMELSAD != "State Senate Districts not defined")
+
+# Clean nonlethal county overdose data CSV
+# https://clearinghouse.isgs.illinois.edu/data/reference/illinois-county-boundaries-polygons-and-lines
+county_ods_nonlethal <-
+  read_csv("overdose_data/county_nonlethal.csv", show_col_types = FALSE) %>%
+  select(CY, county_name, Cases, Rate) %>%
+  rename(COUNTY_NAM = county_name) %>%
+  filter(CY == 2021) %>%
+  mutate(COUNTY_NAM = toupper(COUNTY_NAM))
+# Clean lethal county overdose data CSV
+county_ods_lethal <-
+  read_csv("overdose_data/county_lethal.csv", show_col_types = FALSE) %>%
+  select(CY, county_name, Cases, Rate) %>%
+  rename(COUNTY_NAM = county_name) %>%
+  filter(CY == 2021) %>%
+  mutate(COUNTY_NAM = toupper(COUNTY_NAM))
+# TODO ZIP CODES
+
+county_nl_ods_sf <-
+  merge(county_sf, county_ods_nonlethal, by="COUNTY_NAM")
+county_l_ods_sf <-
+  merge(county_sf, county_ods_lethal, by="COUNTY_NAM")
+```
+
+# Map Creation
+### Initialize Map and create overdose bins
+```{r}
+m <- leaflet(options = leafletOptions(minZoom = 6, maxZoom = 12)) %>%
+  setView(-89, 40, 6)# %>%
+  #addTiles() # add OpenStreetMap
+
+# County non-lethal Overdose Data binning and colorway
+bins <- c(0,5,10,15,20,25)
+pal <- colorBin("YlOrRd",
+                domain = county_nl_ods_sf$Rate,
+                bins   = bins)
+
+# County lethal Overdose Data binning and colorway
+bins_l <- c(0, 1, 2, 3, 4, 5)
+pal_l <- colorBin("Blues",
+                  domain = county_l_ods_sf$Rate,
+                  bins   = bins_l)
+```
+
+### Prep labels.
+```{r}
+# County non-lethal Labels HTML
+county_nl_labels <- sprintf(
+  "<strong>%s</strong><br/>%g Crude Rate, Non-Fatal<br/>%g",
+  county_nl_ods_sf$COUNTY_NAM, county_nl_ods_sf$Rate, county_nl_ods_sf$CY
+) %>% lapply(htmltools::HTML)
+# County lethal Labels HTML
+county_l_labels <- sprintf(
+  "<strong>%s</strong><br/>%g Crude Rate, Fatal<br/>%g",
+  county_l_ods_sf$COUNTY_NAM, county_l_ods_sf$Rate, county_l_ods_sf$CY
+) %>% lapply(htmltools::HTML)
+
+# House Labels HTML
+house_labels <- sprintf(
+  "<strong>%s</strong><br/>%s",
+  house_sf$NAMELSAD, house_sf$LSY
+) %>% lapply(htmltools::HTML)
+# Senate Labels HTML
+senate_labels <- sprintf(
+  "<strong>%s</strong><br/>%s",
+  senate_sf$NAMELSAD, senate_sf$LSY
+) %>% lapply(htmltools::HTML)
+```
+
+### Add Layers (counties, zip codes, house, senate) with Interactivity
+```{r}
+# Right now just have counties and house
+m <- m %>%
+  # House Districts
+  addPolygons(
+    data = house_sf,
+    color = "#444444", weight = 1, smoothFactor = 0.5,
+    opacity = 1.0, fillOpacity = 0.5,
+    # Interactivity
+    label = house_labels,
+    labelOptions = labelOptions(
+      style = list("font-weight" = "normal", padding = "3px 8px"),
+      textsize = "15px",
+      direction = "auto"),
+    group = "House"
+  ) %>%
+  # Senate Districts
+  addPolygons(
+    data = senate_sf,
+    color = "#444444", weight = 1, smoothFactor = 0.5,
+    opacity = 1.0, fillOpacity = 0.5,
+    # Interactivity
+    label = senate_labels,
+    labelOptions = labelOptions(
+      style = list("font-weight" = "normal", padding = "3px 8px"),
+      textsize = "15px",
+      direction = "auto"),
+    group = "Senate"
+  ) %>%
+  # Counties with non-fatal overdose fill
+  addPolygons(
+    data = county_nl_ods_sf,
+    fillColor = ~pal(Rate),
+    weight = 2,
+    opacity = 1,
+    color = "white",
+    dashArray = "3",
+    fillOpacity = 0.7,
+    # Interactivity
+    highlightOptions = highlightOptions(
+      weight = 5,
+      color = "#666",
+      dashArray = "",
+      fillOpacity = 0.7,
+      bringToFront = TRUE),
+    label = county_nl_labels,
+    labelOptions = labelOptions(
+      style = list("font-weight" = "normal", padding = "3px 8px"),
+      textsize = "15px",
+      direction = "auto"),
+    group = "Counties (Non-Fatal)"
+  ) %>%
+  # Counties with fatal overdose fill
+  addPolygons(
+    data = county_l_ods_sf,
+    fillColor = ~pal_l(Rate),
+    weight = 2,
+    opacity = 1,
+    color = "white",
+    dashArray = "3",
+    fillOpacity = 0.7,
+    # Interactivity
+    highlightOptions = highlightOptions(
+      weight = 5,
+      color = "#666",
+      dashArray = "",
+      fillOpacity = 0.7,
+      bringToFront = TRUE),
+    label = county_l_labels,
+    labelOptions = labelOptions(
+      style = list("font-weight" = "normal", padding = "3px 8px"),
+      textsize = "15px",
+      direction = "auto"),
+    group = "Counties (Fatal)"
+  )
+```
+
+### Add Search Bar
+```{r}
+# Add Search Bar
+library(leaflet.extras)
+m <- m %>%
+  addSearchFeatures(c("Senate", "House"),
+                    options = searchFeaturesOptions(
+                      moveToLocation       = T,
+                      zoom                 = 8,
+                      autoCollapse         = T,
+                      textPlaceholder      = "Search for a District",
+                      openPopup            = T))
+# Bugs:
+#       - for some reason marker isn't exact (e.g. "Senate District 23")
+#       - marker doesn't disappear
+```
+
+### Add Legend, Layer Control, and Reset Map Button
+```{r}
+groups <-
+  c("Senate", "House", "Counties (Non-Fatal)", "Counties (Fatal)",
+    "Non-Fatal Legend", "Fatal Legend")
+hidden_groups <-
+  c("House",
+    #"Senate",
+    "Counties (Non-Fatal)",
+    "Counties (Fatal)",
+    "Non-Fatal Legend",
+    "Fatal Legend"
+    )
+m <- m %>%
+   addLegend(data     = county_nl_ods_sf,
+             pal      = pal,
+             values   = ~Rate,
+             opacity  = 0.7,
+             title    = "Non-Fatal Overdose Crude Rate",
+             position = "bottomright",
+             group    = "Non-Fatal Legend") %>%
+   addLegend(data     = county_l_ods_sf,
+             pal      = pal_l,
+             values   = ~Rate,
+             opacity  = 0.7,
+             title    = "Fatal Overdose Crude Rate",
+             position = "bottomright",
+             group    = "Fatal Legend") %>%
+  addLayersControl(
+    overlayGroups = c(groups)
+  ) %>% hideGroup(hidden_groups) %>%
+  addResetMapButton()
+```
+
+### Final Product
+```{r}
+m
+saveWidget(m, file="map.html")
+```
